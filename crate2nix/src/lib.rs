@@ -165,13 +165,20 @@ fn cargo_metadata(config: &GenerateConfig, cargo_toml: &Path) -> Result<Metadata
     other_options.push("--locked".into());
     cmd.manifest_path(&cargo_toml)
         .other_options(&*other_options);
-    cmd.exec().map_err(|e| {
-        format_err!(
-            "while retrieving metadata about {}: {}",
-            &cargo_toml.to_string_lossy(),
-            e
-        )
-    })
+    cmd.exec()
+        .map_err(|e| {
+            format_err!(
+                "while retrieving metadata about {}: {}",
+                &cargo_toml.to_string_lossy(),
+                e
+            )
+        })
+        .map(|mut metadata| {
+            for package in metadata.packages.iter_mut() {
+                package.targets.sort_by(|t0, t1| t0.name.cmp(&t1.name))
+            }
+            metadata
+        })
 }
 
 /// Prefetch hashes when necessary.
