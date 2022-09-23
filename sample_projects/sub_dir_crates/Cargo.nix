@@ -7,11 +7,7 @@
 , pkgs ? import nixpkgs { config = {}; }
 , lib ? pkgs.lib
 , stdenv ? pkgs.stdenv
-, buildRustCrateForPkgs ? if buildRustCrate != null
-    then lib.warn "crate2nix: Passing `buildRustCrate` as argument to Cargo.nix is deprecated. If you don't customize `buildRustCrate`, replace `callPackage ./Cargo.nix {}` by `import ./Cargo.nix { inherit pkgs; }`, and if you need to customize `buildRustCrate`, use `buildRustCrateForPkgs` instead." (_: buildRustCrate)
-    else pkgs: pkgs.buildRustCrate
-  # Deprecated
-, buildRustCrate ? null
+, buildRustCrateForPkgs ? pkgs: pkgs.buildRustCrate
   # This is used as the `crateOverrides` argument for `buildRustCrate`.
 , defaultCrateOverrides ? pkgs.defaultCrateOverrides
   # The features to enable for the root_crate or the workspace_members.
@@ -122,7 +118,11 @@ rec {
         version = "0.1.0";
         edition = "2018";
         crateBin = [
-          { name = "sub_dir_crates"; path = "src/main.rs"; }
+          {
+            name = "sub_dir_crates";
+            path = "src/main.rs";
+            requiredFeatures = [ ];
+          }
         ];
         # We can't filter paths with references in Nix 2.4
         # See https://github.com/NixOS/nix/issues/5410
@@ -153,26 +153,25 @@ rec {
   /* Target (platform) data for conditional dependencies.
     This corresponds roughly to what buildRustCrate is setting.
   */
-  defaultTarget = {
-    unix = true;
-    windows = false;
+  makeDefaultTarget = platform: {
+    unix = platform.isUnix;
+    windows = platform.isWindows;
     fuchsia = true;
     test = false;
 
-    # This doesn't appear to be officially documented anywhere yet.
-    # See https://github.com/rust-lang-nursery/rust-forge/issues/101.
-    os =
-      if stdenv.hostPlatform.isDarwin
-      then "macos"
-      else stdenv.hostPlatform.parsed.kernel.name;
-    arch = stdenv.hostPlatform.parsed.cpu.name;
+    /* We are choosing an arbitrary rust version to grab `lib` from,
+      which is unfortunate, but `lib` has been version-agnostic the
+      whole time so this is good enough for now.
+    */
+    os = pkgs.rust.lib.toTargetOs platform;
+    arch = pkgs.rust.lib.toTargetArch platform;
     family = "unix";
     env = "gnu";
     endian =
-      if stdenv.hostPlatform.parsed.cpu.significantByte.name == "littleEndian"
+      if platform.parsed.cpu.significantByte.name == "littleEndian"
       then "little" else "big";
-    pointer_width = toString stdenv.hostPlatform.parsed.cpu.bits;
-    vendor = stdenv.hostPlatform.parsed.vendor.name;
+    pointer_width = toString platform.parsed.cpu.bits;
+    vendor = platform.parsed.vendor.name;
     debug_assertions = false;
   };
 
@@ -375,12 +374,12 @@ rec {
     , crateConfigs ? crates
     , buildRustCrateForPkgsFunc
     , runTests
-    , target ? defaultTarget
+    , makeTarget ? makeDefaultTarget
     } @ args:
       assert (builtins.isAttrs crateConfigs);
       assert (builtins.isString packageId);
       assert (builtins.isList features);
-      assert (builtins.isAttrs target);
+      assert (builtins.isAttrs (makeTarget stdenv.hostPlatform));
       assert (builtins.isBool runTests);
       let
         rootPackageId = packageId;
@@ -388,7 +387,7 @@ rec {
           (
             args // {
               inherit rootPackageId;
-              target = target // { test = runTests; };
+              target = makeTarget stdenv.hostPlatform // { test = runTests; };
             }
           );
         # Memoize built packages so that reappearing packages are only built once.
@@ -397,6 +396,7 @@ rec {
           let
             self = {
               crates = lib.mapAttrs (packageId: value: buildByPackageIdForPkgsImpl self pkgs packageId) crateConfigs;
+              target = makeTarget pkgs.stdenv.hostPlatform;
               build = mkBuiltByPackageIdByPkgs pkgs.buildPackages;
             };
           in
@@ -413,7 +413,8 @@ rec {
                 (crateConfig'.devDependencies or [ ]);
             dependencies =
               dependencyDerivations {
-                inherit features target;
+                inherit features;
+                inherit (self) target;
                 buildByPackageId = depPackageId:
                   # proc_macro crates must be compiled for the build architecture
                   if crateConfigs.${depPackageId}.procMacro or false
@@ -425,24 +426,26 @@ rec {
               };
             buildDependencies =
               dependencyDerivations {
-                inherit features target;
+                inherit features;
+                inherit (self.build) target;
                 buildByPackageId = depPackageId:
                   self.build.crates.${depPackageId};
                 dependencies = crateConfig.buildDependencies or [ ];
               };
-            filterEnabledDependenciesForThis = dependencies: filterEnabledDependencies {
-              inherit dependencies features target;
-            };
             dependenciesWithRenames =
-              lib.filter (d: d ? "rename")
-                (
-                  filterEnabledDependenciesForThis
-                    (
-                      (crateConfig.buildDependencies or [ ])
-                      ++ (crateConfig.dependencies or [ ])
-                      ++ devDependencies
-                    )
-                );
+              let
+                buildDeps = filterEnabledDependencies {
+                  inherit features;
+                  inherit (self) target;
+                  dependencies = crateConfig.dependencies or [ ] ++ devDependencies;
+                };
+                hostDeps = filterEnabledDependencies {
+                  inherit features;
+                  inherit (self.build) target;
+                  dependencies = crateConfig.buildDependencies or [ ];
+                };
+              in
+              lib.filter (d: d ? "rename") (hostDeps ++ buildDeps);
             # Crate renames have the form:
             #
             # {
@@ -517,7 +520,7 @@ rec {
     else val;
 
   /* Returns various tools to debug a crate. */
-  debugCrate = { packageId, target ? defaultTarget }:
+  debugCrate = { packageId, target ? makeDefaultTarget stdenv.hostPlatform }:
     assert (builtins.isString packageId);
     let
       debug = rec {
@@ -700,7 +703,7 @@ rec {
       len = builtins.stringLength prefix;
       startsWithPrefix = builtins.substring 0 len feature == prefix;
     in
-    feature == name || startsWithPrefix;
+    feature == name || feature == "dep:" + name || startsWithPrefix;
 
   /* Returns the expanded features for the given inputFeatures by applying the
     rules in featureMap.

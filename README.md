@@ -107,7 +107,7 @@ Within a nix file (e.g. your manually written `default.nix`), you can access the
 derivation like this:
 
 ```nix
-let cargo_nix = import ./Cargo.nix { inherit pkgs; };
+let cargo_nix = callPackage ./Cargo.nix {};
 in cargo_nix.rootCrate.build
 ```
 
@@ -130,7 +130,7 @@ Within a nix file (e.g. your manually written `default.nix`), you can access the
 derivation like this:
 
 ```nix
-let cargo_nix = import ./Cargo.nix { inherit pkgs; };
+let cargo_nix = callPackage ./Cargo.nix {};
 in cargo_nix.workspaceMembers."${your_crate_name}".build
 ```
 
@@ -189,7 +189,7 @@ that pinned `pkgs` with the rust version of your choice:
 ```nix
 { pkgs ? import ./nix/nixpkgs.nix }:
 
-let cargoNix = import ./Cargo.nix { inherit pkgs; };
+let cargoNix = pkgs.callPackage ./Cargo.nix {};
 in cargoNix.rootCrate.build
 ```
 
@@ -204,10 +204,10 @@ The enabled features for a crate now are resolved at build time! That means you 
       nix build -f ....nix --arg rootFeatures '["default" "other"]' rootCrate.build
       ```
 
-2. Or when importing the build file:
+2. Or when importing the build file with "callPackage":
 
       ```nix
-      let cargo_nix = import ./Cargo.nix { inherit pkgs; rootFeatures = ["default" "other"]; };
+      let cargo_nix = callPackage ./Cargo.nix { rootFeatures = ["default" "other"]; };
           crate2nix = cargo_nix.rootCrate.build;
       in ...
       ```
@@ -215,7 +215,7 @@ The enabled features for a crate now are resolved at build time! That means you 
 3. Or by overriding them on the rootCrate or workspaceMembers:
 
       ```nix
-      let cargo_nix = import ./Cargo.nix { inherit pkgs; };
+      let cargo_nix = callPackage ./Cargo.nix {};
           crate2nix = cargo_nix.rootCrate.build.override { features = ["default" "other"]; };
       in ...
       ```
@@ -243,8 +243,7 @@ let
       };
     };
   };
-  generatedBuild = import ./crate2nix/Cargo.nix {
-    inherit pkgs;
+  generatedBuild = callPackage ./crate2nix/Cargo.nix {
     buildRustCrateForPkgs = customBuildRustCrateForPkgs;
   };
 in generatedBuild.rootCrate.build
@@ -264,8 +263,7 @@ let
       };
     };
   };
-  generatedBuild = import ./crate2nix/Cargo.nix {
-    inherit pkgs;
+  generatedBuild = callPackage ./crate2nix/Cargo.nix {
     buildRustCrateForPkgs = customBuildRustCrateForPkgs;
   };
 in generatedBuild.rootCrate.build
@@ -285,7 +283,7 @@ execution (`runTests = true;`), failing tests will make the whole build fail
 unless you explicitly disable this via test hooks: see the section below.
 
 ```nix
-      let cargo_nix = import ./Cargo.nix { inherit pkgs; };
+      let cargo_nix = callPackage ./Cargo.nix {};
           crate2nix = cargo_nix.rootCrate.build.override {
 	    runTests = true;
 	    testInputs = [ pkgs.cowsay ];
@@ -311,14 +309,6 @@ the actual test command, and in the same shell. Some example use-cases include:
   not flaky and you want to cache failures.
 
 ## FAQ
-
-#### I get a warning about `buildRustCrate` being deprecated in favor of `buildRustCrateForPkgs`
-
-First, this warning only matters if you care about cross-compilation.
-
-You are calling `./Cargo.nix` with the option `buildRustCrate`:
-* either implicitely with callPackage (because nixpkgs contains an attribute called `buildRustCrate`) `callPackage ./Cargo.nix {}`: use import instead and pass the `pkgs` argument explicitely: `import ./Cargo.nix { inherit pkgs; }`
-* or explicitly (`import ./Cargo.nix { inherit pkgs; buildRustCrate = ...; }`). In this case you should migrate to `buildRustCrateForPkgs`: `import ./Cargo.nix { inherit pkgs; buildRustCrateForPkgs = package_set: ...; }`. `buildRustCrateForPkgs` should be a function taking a package set `package_set` and returning the same value as `buildRustCrate` but taking its constituent derivations in `package_set`. The default value is only `package_set: package_set.buildRustCrate` and the value you used to pass as `buildRustCrate` should be equal to `buildRustCrateForPkgs pkgs`.
 
 ## Known Restrictions
 
@@ -407,81 +397,3 @@ If you want to hack on this, it is useful to know that build file generation is 
       crate2nix).
 * [cargo-raze](https://github.com/google/cargo-raze) generates `BUILD`
   files for bazel.
-
-## Contributions
-
-Contributions in the form of documentation and bug fixes are highly welcome.
-Please start a discussion with me before working on larger features.
-
-I'd really appreciate tests for all new features. Please run `./run_tests.sh`
-before submitting a pull request.
-
-Feature ideas are also welcome -- just know that this is a pure hobby side
-project and I will not allocate a lot of bandwidth to this. Therefore, important
-bug fixes are always prioritised.
-
-By submitting a pull request, you agree to license your changes via all the
-current licenses of the project.
-
-### Regenerating Cargo.nix files for tests
-
-If you change `crate2nix` such that it will produce a different output, you may
-need to regenerate some of the Cargo.toml files. Not all `Cargo.toml` files can
-be generated during test time because crate2nix needs to vendor the dependencies
-for this to work and support for git submodules is not working yet, see
-[#101](https://github.com/kolloch/crate2nix/issues/101).
-
-`regenerate_cargo_nix.sh` should do what you want and is run as part of
-`run_tests.sh` (see below).
-
-### Running tests
-
-`run_tests.sh` will regenerate build files AND run cargo test for you. It will
-call out to nix to build the sample projects -- so a considerable number of
-dependencies will be fetched and built. Consecutive runs are much faster.
-
-### Hacking on `buildRustCrate` in nixpkgs
-
-Since `crate2nix` heavily depends on `buildRustCrate` in `nixpkgs`, it makes
-sense to hack on them together.
-
-To be able to provide pull requests, you probably want to fork
-[nixpkgs](https://github.com/NixOS/nixpkgs) first. Once you have done that,
-clone that fork into some local directory (separate from crate2nix).
-
-#### Overriding nixpkgs for everything
-
-Now you can run the integration tests of `crate2nix` against that version of
-nixpkgs. Let's assume you are in the `crate2nix` project directory and you
-cloned `nixpkgs` to a sibling directory:
-
-```shell
-nix-build --arg nixpkgs ../nixpkgs -o ./crate2nix/target/nix-results ./tests.nix
-```
-
-Or run just an individual test (in this example "bin_with_lib_dep"):
-
-```shell
-nix-build --arg nixpkgs ../nixpkgs \
-  -o ./crate2nix/target/nix-results ./tests.nix -A bin_with_lib_dep
-```
-
-(The "-o" argument is just to avoid a lot of top-level result directories.)
-
-#### Overriding nixpkgs for buildTests
-
-The problems is that this method will rebuild everything with your nixpkgs,
-including `crate2nix` itself. That can become severely annoying if you want
-to iterate on one special test case.
-
-If you are fixing an issue in `buildRustCrate` that you can reproduce with a
-`buildTest` in `tests.nix`, then there is a much better way.
-
-```shell
-nix-build --arg buildTestNixpkgs ../nixpkgs \
-  -o ./crate2nix/target/nix-results ./tests.nix -A bin_with_lib_dep
-```
-
-Notice `--arg buildTestNixpkgs` instead of `--arg nixpkgs`. That will not
-rebuild `crate2nix` itself with your nixpkgs but it will use `buildRustCrate`
-from your `nixpkgs` for all `buildTests`.

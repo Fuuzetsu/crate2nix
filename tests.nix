@@ -26,7 +26,7 @@ let
     , cargoToml ? "Cargo.toml"
     , features ? [ "default" ]
     , skip ? false
-    , expectedOutput
+    , expectedOutput ? null
     , expectedTestOutputs ? [ ]
     , pregeneratedBuild ? null
     , additionalCargoNixArgs ? [ ]
@@ -98,6 +98,7 @@ let
 
       sanitizedBuildTree = debugFile "sanitizedBuildTree";
       buildPhase =
+        # Need tests if there is expected test output
         assert lib.length expectedTestOutputs > 0 -> derivation ? test;
         ''
                     echo === DEBUG INFO
@@ -106,18 +107,27 @@ let
                     echo ${debugFile "mergedPackageFeatures"}
                     echo ${debugFile "diffedDefaultPackageFeatures"}
 
-                    echo === RUNNING
                     mkdir -p $out
-                    ${derivation.crateName} | tee $out/run.log
-                    echo === VERIFYING expectedOutput
-                    grep '${expectedOutput}' $out/run.log || {
-                      echo '${expectedOutput}' not found in:
-                      cat $out/run.log
-                      exit 23
-                    }
 
-                    echo === RUNNING TESTS
-                    ${lib.optionalString (lib.length expectedTestOutputs > 0) ''
+                    ${if expectedOutput == null then ''
+                      echo === SKIP RUNNING
+                      echo "(no executables)"
+                    '' else ''
+                      echo === RUNNING
+                      ${derivation.crateName} | tee $out/run.log
+                      echo === VERIFYING expectedOutput
+                      grep '${expectedOutput}' $out/run.log || {
+                        echo '${expectedOutput}' not found in:
+                        cat $out/run.log
+                        exit 23
+                      }
+                    ''}
+
+                    ${if lib.length expectedTestOutputs == 0 then ''
+                      echo === SKIP RUNNING TESTS
+                      echo "(no tests)"
+                    '' else ''
+                      echo === RUNNING TESTS
                       cp ${derivation.test} $out/tests.log
                       echo === VERIFYING expectedTestOutputs
                     ''}
@@ -185,6 +195,13 @@ let
     }
 
     {
+      name = "bin_required_features";
+      src = ./sample_projects/bin_required_features;
+      expectedOutput = "Hello from bin_required_features default binary";
+      features = [ "compilemainbinary" ];
+    }
+
+    {
       name = "bin_with_lib_git_dep";
       src = ./sample_projects/bin_with_lib_git_dep;
       expectedOutput = "Hello world from bin_with_lib_git_dep!";
@@ -202,6 +219,13 @@ let
       src = ./sample_projects;
       cargoToml = "bin_with_rerenamed_lib_dep/Cargo.toml";
       expectedOutput = "Hello, bin_with_rerenamed_lib_dep!";
+    }
+
+    {
+      name = "bin_with_dep_features";
+      src = ./sample_projects;
+      cargoToml = "bin_with_dep_features/Cargo.toml";
+      expectedOutput = "Hello, bin_with_dep_features!";
     }
 
     {
@@ -248,6 +272,15 @@ let
       name = "renamed_build_deps";
       src = ./sample_projects/renamed_build_deps;
       expectedOutput = "Hello, renamed_build_deps!";
+    }
+
+    {
+      name = "renamed_dev_deps";
+      src = ./sample_projects/renamed_dev_deps;
+      expectedTestOutputs = [
+        "test test::ran_a_test ... ok"
+      ];
+      customBuild = "sample_projects/renamed_dev_deps/test.nix";
     }
 
     {
@@ -442,6 +475,13 @@ let
       expectedOutput = "Hello, world!";
       # FIXME: https://github.com/kolloch/crate2nix/issues/83
       skip = true;
+    }
+
+    {
+      name = "empty_cross";
+      src = ./sample_projects/empty_cross;
+      cargoToml = "Cargo.toml";
+      customBuild = "sample_projects/empty_cross/default.nix";
     }
   ];
   buildTestDerivationAttrSet =
